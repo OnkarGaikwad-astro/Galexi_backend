@@ -21,6 +21,21 @@ HEADERS = {
     "Prefer": "return=representation"
 }
 
+def find_existing_chat(sender, receiver):
+    url = (
+        f"{MESSAGES_REST_URL}"
+        f"?or=(and(sender_id.eq.{sender},receiver_id.eq.{receiver}),"
+        f"and(sender_id.eq.{receiver},receiver_id.eq.{sender}))"
+        f"&select=id"
+    )
+
+    res = requests.get(url, headers=HEADERS).json()
+
+    if len(res) > 0:
+        return res[0]["id"]  
+    return None  
+
+
 @app.route("/")
 def home():
     return {"Greet": "Hello Aurex"}
@@ -29,21 +44,26 @@ def home():
 def add_message():
     body = request.json or {}
 
-    shared_id = body.get("id")       
     sender = body.get("sender_id")
     receiver = body.get("receiver_id")
     text = body.get("msg")
 
-    if not shared_id or not sender or not receiver or not text:
-        return {"error": "id, sender_id, receiver_id, msg required"}, 400
+    if not sender or not receiver or not text:
+        return {"error": "sender_id, receiver_id, msg required"}, 400
+
+    existing_shared_id = find_existing_chat(sender, receiver)
+
+    if existing_shared_id:
+        shared_id = existing_shared_id
+    else:
+        now = datetime.now(ist)
+        shared_id = now.strftime("%Y%m%d%H%M%S")   
 
     count_url = f"{MESSAGES_REST_URL}?id=eq.{shared_id}&select=conversation_id"
-    existing = requests.get(count_url, headers=HEADERS).json()
+    previous_msgs = requests.get(count_url, headers=HEADERS).json()
+    next_convo_id = len(previous_msgs) + 1
 
-    next_convo_id = len(existing) + 1  
-
-    now = datetime.now(ist)
-    timestamp = now.strftime("%Y-%m-%dT%H:%M:%S")
+    timestamp = datetime.now(ist).strftime("%Y-%m-%dT%H:%M:%S")
 
     payload = {
         "id": shared_id,
@@ -55,7 +75,13 @@ def add_message():
     }
 
     res = requests.post(MESSAGES_REST_URL, json=payload, headers=HEADERS)
-    return jsonify(res.json()), res.status_code
+
+    return jsonify({
+        "status": "message added",
+        "shared_id": shared_id,
+        "conversation_id": next_convo_id
+    }), res.status_code
+
 
 @app.route("/messages/<shared_id>")
 def get_messages(shared_id):
@@ -133,6 +159,64 @@ def all_chats():
         })
 
     final_output = list(chat_map.values())
+    return jsonify(final_output), 200
+
+@app.route("/chat/<sender>/<receiver>")
+def chat_between_two(sender, receiver):
+    url = (
+        f"{MESSAGES_REST_URL}"
+        f"?or=(and(sender_id.eq.{sender},receiver_id.eq.{receiver}),"
+        f"and(sender_id.eq.{receiver},receiver_id.eq.{sender}))"
+        f"&order=conversation_id.asc"
+    )
+
+    res = requests.get(url, headers=HEADERS)
+    rows = res.json()
+
+    if not rows:
+        return {"error": "No chat found between users"}, 404
+
+    shared_id = rows[0]["id"]
+
+    return jsonify({
+        "shared_id": shared_id,
+        "messages": rows
+    }), 200
+
+@app.route("/user_chats/<user_id>")
+def chats_for_user(user_id):
+    url = (
+        f"{MESSAGES_REST_URL}"
+        f"?or=(sender_id.eq.{user_id},receiver_id.eq.{user_id})"
+        f"&order=id.asc,conversation_id.asc"
+    )
+
+    res = requests.get(url, headers=HEADERS).json()
+
+    if not res:
+        return {"error": "No chats found"}, 404
+
+    chat_map = {}
+
+    for msg in res:
+        shared_id = msg["id"]
+
+        if shared_id not in chat_map:
+            chat_map[shared_id] = {
+                "id": shared_id,
+                "messages": []
+            }
+
+        chat_map[shared_id]["messages"].append({
+            "conversation_id": msg["conversation_id"],
+            "sender_id": msg["sender_id"],
+            "receiver_id": msg["receiver_id"],
+            "msg": msg["msg"],
+            "timestamp": msg["timestamp"]
+        })
+
+    final_output = list(chat_map.values())
+
     return jsonify(final_output), 200
 
 
