@@ -133,11 +133,15 @@ def delete_message(shared_id, convo_id):
         new_number += 1
     return {"status": "deleted and renumbered"}, 200
 
+
+
 @app.route("/delete_chat/<shared_id>", methods=["DELETE"])
 def delete_chat(shared_id):
     delete_url = f"{MESSAGES_REST_URL}?id=eq.{shared_id}"
     requests.delete(delete_url, headers=HEADERS)
     return {"status": f"All messages of chat {shared_id} deleted"}, 200
+
+
 
 @app.route("/all_chats")
 def all_chats():
@@ -166,6 +170,8 @@ def all_chats():
     final_output = list(chat_map.values())
     return jsonify(final_output), 200
 
+
+
 @app.route("/chat/<sender>/<receiver>")
 def chat_between_two(sender, receiver):
     url = (
@@ -174,63 +180,61 @@ def chat_between_two(sender, receiver):
         f"and(sender_id.eq.{receiver},receiver_id.eq.{sender}))"
         f"&order=conversation_id.asc"
     )
-
     res = requests.get(url, headers=HEADERS)
     rows = res.json()
-
     if not rows:
         return {"error": "No chat found between users"}, 404
-
+    
     shared_id = rows[0]["id"]
+    message_count = len(rows)
+    cleaned = []
+    for msg in rows:
+        cleaned.append({
+            "msg": msg["msg"],
+            "timestamp": msg["timestamp"],
+            "user_sent": "yes" if msg["sender_id"] == sender else "no"
+        })
 
     return jsonify({
         "shared_id": shared_id,
-        "messages": rows
+        "message_count": message_count,
+        "messages": cleaned
     }), 200
+
+
+
 
 @app.route("/user_chats/<user_id>")
 def chats_for_user(user_id):
     url = (
         f"{MESSAGES_REST_URL}"
         f"?or=(sender_id.eq.{user_id},receiver_id.eq.{user_id})"
-        f"&order=id.asc,conversation_id.asc"
-    )
-
-    res = requests.get(url, headers=HEADERS).json()
-    if not res:
-        return {"error": "No chats found"}, 404
-    chat_map = {}
-    for msg in res:
-        shared_id = msg["id"]
-        
-        if shared_id not in chat_map:
-            chat_map[shared_id] = {
-                "id": shared_id,
-                "messages": []
-            }
-        chat_map[shared_id]["messages"].append({
-            "conversation_id": msg["conversation_id"],
-            "sender_id": msg["sender_id"],
-            "receiver_id": msg["receiver_id"],
-            "msg": msg["msg"],
-            "timestamp": msg["timestamp"]
-        })
-    final_output = list(chat_map.values())
-    return jsonify(final_output), 200
-
-
-@app.route("/chat_count/<user_id>")
-def chat_count(user_id):
-    url = (
-        f"{MESSAGES_REST_URL}"
-        f"?or=(sender_id.eq.{user_id},receiver_id.eq.{user_id})"
-        f"&select=id"
+        f"&order=id.asc"
+        f"&select=id,sender_id,receiver_id"
     )
     rows = requests.get(url, headers=HEADERS).json()
     if not rows:
-        return {"chat_count": 0}
-    unique_ids = set([msg["id"] for msg in rows])
-    return {"chat_count": len(unique_ids)}, 200
+        return {"error": "No chats found"}, 404
+    chat_map = {}
+    for msg in rows:
+        shared_id = msg["id"]
+        sender = msg["sender_id"]
+        receiver = msg["receiver_id"]
+
+        if shared_id not in chat_map:
+            other_user = receiver if sender == user_id else sender
+            chat_map[shared_id] = {
+                "shared_id": shared_id,
+                "sender_id": sender,
+                "receiver_id": receiver,
+                "other_user": other_user
+            }
+    final_output = list(chat_map.values())
+    return jsonify({
+        "chat_count": len(final_output),
+        "chats": final_output
+    }), 200
+
 
 
 @app.route("/webhook", methods=["GET", "POST"])
