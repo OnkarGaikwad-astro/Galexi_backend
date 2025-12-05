@@ -1,10 +1,9 @@
+import json
 import os
 import requests
 from flask import Flask, request, jsonify
 import pytz
 from datetime import datetime
-import firebase_admin
-from firebase_admin import credentials, messaging
 
 app = Flask(__name__)
 
@@ -195,21 +194,17 @@ def chats_for_user(user_id):
     )
 
     res = requests.get(url, headers=HEADERS).json()
-
     if not res:
         return {"error": "No chats found"}, 404
-
     chat_map = {}
-
     for msg in res:
         shared_id = msg["id"]
-
+        
         if shared_id not in chat_map:
             chat_map[shared_id] = {
                 "id": shared_id,
                 "messages": []
             }
-
         chat_map[shared_id]["messages"].append({
             "conversation_id": msg["conversation_id"],
             "sender_id": msg["sender_id"],
@@ -217,43 +212,22 @@ def chats_for_user(user_id):
             "msg": msg["msg"],
             "timestamp": msg["timestamp"]
         })
-
     final_output = list(chat_map.values())
     return jsonify(final_output), 200
 
 
-##### Firebase Notification #####
-
-service_account_info = {
-#####   add credentials
-}
-
-cred = credentials.Certificate(service_account_info)
-firebase_admin.initialize_app(cred)
-
-# ---------------------- ROUTE TO SEND NOTIFICATIONS ----------------------
-
-@app.route("/send_notification", methods=["POST"])
-def send_notification():
-    data = request.json
-    token = data.get("token")
-    title = data.get("title")
-    body = data.get("body")
-    # Build Notification
-    message = messaging.Message(
-        token=token,
-        notification=messaging.Notification(
-            title=title,
-            body=body,
-        ),
-        android=messaging.AndroidConfig(
-            priority="high"
-        )
+@app.route("/chat_count/<user_id>")
+def chat_count(user_id):
+    url = (
+        f"{MESSAGES_REST_URL}"
+        f"?or=(sender_id.eq.{user_id},receiver_id.eq.{user_id})"
+        f"&select=id"
     )
-    # Send notification
-    response = messaging.send(message)
-    return jsonify({"status": "sent", "message_id": response})
-
+    rows = requests.get(url, headers=HEADERS).json()
+    if not rows:
+        return {"chat_count": 0}
+    unique_ids = set([msg["id"] for msg in rows])
+    return {"chat_count": len(unique_ids)}, 200
 
 
 @app.route("/webhook", methods=["GET", "POST"])
