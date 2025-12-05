@@ -3,8 +3,11 @@ import requests
 from flask import Flask, request, jsonify
 import pytz
 from datetime import datetime
+import firebase_admin
+from firebase_admin import credentials, messaging
 
 app = Flask(__name__)
+
 app.config["JSONIFY_PRETTYPRINT_REGULAR"] = True
 
 ist = pytz.timezone("Asia/Kolkata")
@@ -216,8 +219,51 @@ def chats_for_user(user_id):
         })
 
     final_output = list(chat_map.values())
-
     return jsonify(final_output), 200
+
+
+##### Firebase Notification #####
+
+service_account_info = {
+  "type": "service_account",
+  "project_id": "galexi-eebbe",
+  "private_key_id": "27f1fcc01ef8c7c78864a57f940848b2fb78c389",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC+1mo7qZ80gyWB\nz/iztfTgW9YFXQRrOnFGpfGththwZju6nVbLyUNnGH5jjmzKeDLRutsWd3ZBVMow\npqtH3eIAen8IsypZdSITOMshJNk6Fsh+ThcY3YO3yIZ79lKC/e8raTOw6eIuyucZ\nK/w1sgTZVVwuLJq5uUcu5GnIY8iL3dbXVjaDAJNd0TyOLAQY+ebFtoVLBFsUltHZ\nSb2bKJRc1XxyFXQjGlNQ6FArvK1i6TMWCVA8PmyIkbOh2C9W+Bb2sLvklQmS7INf\nE20IXarzsRf21tygJ0Q2QmHzmden4O7kgWKfXDGGxFNBXrb/dD10ohESk0ptz8C9\ndEBUjaP/AgMBAAECggEAOmmvAqwcyxoJdP6PhZKAbdwuWl3qaFfvLEzG+PJ5dY4V\nYj2ev6nPM9NPfHGv4xl/lKq5PNs8Gys06Edbzheggbz8/VC5+b/cuj18D50T0LAA\nloiYkUfcdXivkWoIP4gymPsOk2xDi0cYDaBlBpqC2XNDT+7fPVH08+l+Z5QDYqvw\ne1k+qLfvHa4r2kwicQuscwQPh8cYoqPTTJhWDw7ULD5CjvHdb4qSk7LPJ5mzc5Kt\nt/bJI2rSYe9Z6QyNIDxMjXWIqKf5/EN9TPsFuM/PZPsKiHs+9XnONAoLceBsKVNI\nNgMrnNHKOutaDPKib7yUJNsgpzUSePc9DqIy8PAF4QKBgQD1AwWOWKTuqjaXzgBE\n0+jWpMev1p4i+o3jdogzyr33ywzivjHvMJ9Cv28LyRBdnbCosQESrlJSrSsEBW25\n9/IYFZwOlQ71Rh8hpn7kA8QpvQvpuhroxizXDB/9TMWh2XylEpJyYIBIcvPu4E/6\n2WEnoyHdQCJPdtP39jsIdO2X8wKBgQDHZWtUKxcxD1Gggf74ORg91RIgMHk0C/26\nKNKN2sSD0tZY6Kpxr0B8qBHcX0sHRIEp7vRRbz5dlijRtIeUF2LxIAvEj2ARFLvn\nWw7pPlBnK2JDrtot7v/xjn1DXsCiGvgZt6bxD/rodK5HygBL6t9tZX6z63u60uww\nbjUQOJzyxQKBgQCSwX+XdsM77ZqLrSl+EIwb3VF6oovQGdHZWEtW8m59ORN70T6p\nra8HVREXtxRlbqm9MWCaJu5KdU0ZuIKz7K8G/BKgrWnrQlgtWMQSoari8UhsdDvg\nB6weFzYmC9EpE9NUMN6lQeY0/x3bjGJ7t685Bb6n/t1OSbfHg6Zyd09FPwKBgFi8\ny+0jWCjfNmaGM+BoGF+8KVrl96qwA3ULodi7mWVJOVdMBD6fzcUsTvaR+iP72re8\nvkJXjZu8reHVw9imJ8RDjLknTYuMfKtTnOk0cDfZ2NtiP3rduE3aKekHjBcYhX18\ne/EgOXumIcGVJlii6FgZKTANBn14TOCoyziy2TY5AoGALtf2CC/fnGfl1oUR9PU1\nBGXiocMQYY+vbscjC3JxXdNmfxDvq2PnjIMv0cSMb4KBuI8GKWC5gzoG9IjbliQJ\nJUlwVm7eJTxocYchB1zEwHznJWQoP5pOF1OjOYvvUJXeFqTg4bZ/ZlVmIsnGbBSh\nuboYGwDvGJ0M6LXlW9SlHdw=\n-----END PRIVATE KEY-----\n",
+  "client_email": "firebase-adminsdk-fbsvc@galexi-eebbe.iam.gserviceaccount.com",
+  "client_id": "114173166631867812331",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/firebase-adminsdk-fbsvc%40galexi-eebbe.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
+
+cred = credentials.Certificate(service_account_info)
+firebase_admin.initialize_app(cred)
+
+# ---------------------- ROUTE TO SEND NOTIFICATIONS ----------------------
+
+@app.route("/send_notification", methods=["POST"])
+def send_notification():
+    data = request.json
+    token = data.get("token")
+    title = data.get("title")
+    body = data.get("body")
+    # Build Notification
+    message = messaging.Message(
+        token=token,
+        notification=messaging.Notification(
+            title=title,
+            body=body,
+        ),
+        android=messaging.AndroidConfig(
+            priority="high"
+        )
+    )
+    # Send notification
+    response = messaging.send(message)
+    return jsonify({"status": "sent", "message_id": response})
+
 
 
 @app.route("/webhook", methods=["GET", "POST"])
