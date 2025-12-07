@@ -341,7 +341,7 @@ def update_last_seen(user_id):
     url = f"{SUPABASE_URL}/rest/v1/users?user_id=eq.{user_id}"
     res = requests.patch(
         url,
-        json={"last_seen": datetime.utcnow().isoformat()},
+        json={"last_seen": datetime.now(ist).isoformat()},
         headers=HEADERS
     )
     if res.status_code == 204:
