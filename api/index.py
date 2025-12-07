@@ -55,29 +55,41 @@ def home():
 def save_user():
     body = request.json or {}
     required = ["user_id", "name", "fcm_token"]
-    if any(field not in body or body.get(field) == "" for field in required):
+    if any(field not in body or not body[field] for field in required):
         return {"error": "user_id, name and fcm_token required"}, 400
-    url = f"{SUPABASE_URL}/rest/v1/users"
+    user_id = body["user_id"]
+    check_url = f"{SUPABASE_URL}/rest/v1/users?user_id=eq.{user_id}"
+    check_res = requests.get(check_url, headers=HEADERS)
+    if check_res.status_code != 200:
+        return {"error": "failed checking user", "details": check_res.text}, 400
+    exists = len(check_res.json()) > 0
     payload = {
-        "user_id": body["user_id"],
+        "user_id": user_id,
         "name": body["name"],
         "fcm_token": body["fcm_token"],
-        "bio": body.get("bio", ""),  
-        "profile_pic": body.get("profile_pic", ""), 
-        "last_seen":  datetime.now(ist).isoformat(), 
+        "bio": body.get("bio", ""),
+        "profile_pic": body.get("profile_pic", ""),
+        "phone_no": body.get("phone_no", ""),
+        "last_seen": datetime.now(ist).isoformat(),
     }
+    if exists:
+        res = requests.patch(
+            check_url,
+            json=payload,
+            headers=HEADERS
+        )
+
+        if res.status_code in (200, 204):
+            return {"status": "updated"}, 200
+        return {"error": "update failed", "details": res.text}, 400
     res = requests.post(
-        url,
+        f"{SUPABASE_URL}/rest/v1/users",
         json=payload,
-        headers={**HEADERS, "Prefer": "resolution=merge-duplicates"}
+        headers=HEADERS
     )
     if res.status_code in (200, 201):
-        return {"status": "saved"}, 200
-    else:
-        return {"error": "failed", "details": res.text}, 400
-
-
-
+        return {"status": "inserted"}, 200
+    return {"error": "insert failed", "details": res.text}, 400
 
 
 
@@ -117,7 +129,7 @@ def add_message():
     count_url = f"{MESSAGES_REST_URL}?id=eq.{shared_id}&select=conversation_id"
     previous_msgs = requests.get(count_url, headers=HEADERS).json()
     next_convo_id = len(previous_msgs) + 1
-    timestamp = datetime.now(ist).strftime("%Y-%m-%dT%H:%M:%S")
+    timestamp = datetime.now(ist).strftime("%Y-%m-%d \n %H:%M:%S")
     payload = {
         "id": shared_id,
         "conversation_id": next_convo_id,
@@ -219,35 +231,58 @@ def chat_between_two(sender, receiver):
 ##### get user contact list #####
 
 @app.route("/user_contacts/<user_id>")
-def chats_for_user(user_id):
+def user_contacts(user_id):
     url = (
         f"{MESSAGES_REST_URL}"
         f"?or=(sender_id.eq.{user_id},receiver_id.eq.{user_id})"
-        f"&order=id.asc"
-        f"&select=id,sender_id,receiver_id"
+        f"&select=sender_id,receiver_id,msg,timestamp"
+        f"&order=timestamp.desc"
     )
     rows = requests.get(url, headers=HEADERS).json()
     if not rows:
-        return {"error": "No chats found"}, 404
-    chat_map = {}
+        return {"contact_count": 0, "contacts": []}, 200
+    contact_map = {}
     for msg in rows:
-        shared_id = msg["id"]
         sender = msg["sender_id"]
         receiver = msg["receiver_id"]
-
-        if shared_id not in chat_map:
-            other_user = receiver if sender == user_id else sender
-            chat_map[shared_id] = {
-                "shared_id": shared_id,
-                "sender_id": sender,
-                "receiver_id": receiver,
-                "other_user": other_user
+        other_user = receiver if sender == user_id else sender
+        if other_user not in contact_map:
+            contact_map[other_user] = {
+                "id": other_user,
+                "last_message": msg["msg"],
+                "last_message_time": msg["timestamp"],
+                "last_message_sender_id": sender,
+                
             }
-    final_output = list(chat_map.values())
+    contact_ids = list(contact_map.keys())
+    if not contact_ids:
+        return {"contact_count": 0, "contacts": []}, 200
+    ids_str = ",".join(contact_ids)
+    users_url = (
+        f"{SUPABASE_URL}/rest/v1/users"
+        f"?user_id=in.({ids_str})"
+        f"&select=user_id,name,profile_pic"
+    )
+    user_rows = requests.get(users_url, headers=HEADERS).json()
+    final_contacts = []
+    for u in user_rows:
+        uid = u["user_id"]
+        final_contacts.append({
+            "id": uid,
+            "name": u.get("name", ""),
+            "profile_pic": u.get("profile_pic", ""),
+            "last_message": contact_map[uid]["last_message"],
+            "last_message_time": contact_map[uid]["last_message_time"],
+            "last_message_sender_id": contact_map[uid]["last_message_sender_id"],
+            "msg_seen": "seen" if user_id != sender else "not_seen"
+        })
     return jsonify({
-        "chat_count": len(final_output),
-        "chats": final_output
+        "contact_count": len(final_contacts),
+        "contacts": final_contacts
     }), 200
+
+
+
 
 
 ###### get user name ######
@@ -363,6 +398,30 @@ def get_last_seen(user_id):
         "last_seen": res[0]["last_seen"]
     }
 
+
+
+###### delete user with messages ######
+
+@app.route("/delete_user/<user_id>", methods=["DELETE"])
+def delete_user_full(user_id):
+    msg_url = (
+        f"{MESSAGES_REST_URL}"
+        f"?or=(sender_id.eq.{user_id},receiver_id.eq.{user_id})"
+    )
+    msg_res = requests.delete(msg_url, headers=HEADERS)
+    user_url = f"{SUPABASE_URL}/rest/v1/users?user_id=eq.{user_id}"
+    user_res = requests.delete(user_url, headers=HEADERS)
+
+    if user_res.status_code == 204:
+        return {
+            "status": f"user '{user_id}' and related messages deleted"
+        }, 200
+    else:
+        return {
+            "error": "failed to delete user",
+            "details": user_res.text
+        }, 400
+    
 
 
 if __name__ == "__main__":
