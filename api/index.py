@@ -64,7 +64,7 @@ def save_user():
         "fcm_token": body["fcm_token"],
         "bio": body.get("bio", ""),  
         "profile_pic": body.get("profile_pic", ""), 
-        "last_seen": body.get("last_seen"), 
+        "last_seen":  datetime.now(ist).isoformat(), 
     }
     res = requests.post(
         url,
