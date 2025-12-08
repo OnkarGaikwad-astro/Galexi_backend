@@ -228,6 +228,56 @@ def chat_between_two(sender, receiver):
     }), 200
 
 
+
+
+###### get user all chats #######
+
+@app.route("/all_chats/<user_id>")
+def all_chats(user_id):
+    contacts_url = (
+        f"{MESSAGES_REST_URL}"
+        f"?or=(sender_id.eq.{user_id},receiver_id.eq.{user_id})"
+        f"&select=sender_id,receiver_id"
+    )
+    rows = requests.get(contacts_url, headers=HEADERS).json()
+    if not rows:
+        return {"user_id": user_id, "contact_count": 0, "chats": []}, 200
+    contacts = set()
+    for chat in rows:
+        other = chat["receiver_id"] if chat["sender_id"] == user_id else chat["sender_id"]
+        contacts.add(other)
+    all_chats_data = []
+    for contact in contacts:
+        chat_url = (
+            f"{MESSAGES_REST_URL}"
+            f"?or=(and(sender_id.eq.{user_id},receiver_id.eq.{contact}),"
+            f"and(sender_id.eq.{contact},receiver_id.eq.{user_id}))"
+            f"&order=conversation_id.asc"
+        )
+        chat_rows = requests.get(chat_url, headers=HEADERS).json()
+        cleaned_messages = []
+        for msg in chat_rows:
+            cleaned_messages.append({
+                "msg": msg["msg"],
+                "timestamp": msg["timestamp"],
+                "sender_id": msg["sender_id"],
+                "receiver_id": msg["receiver_id"],
+                "user_sent": "yes" if msg["sender_id"] == user_id else "no"
+            })
+        all_chats_data.append({
+            "contact_id": contact,
+            "message_count": len(cleaned_messages),  
+            "messages": cleaned_messages
+        })
+    return {
+        "user_id": user_id,
+        "contact_count": len(all_chats_data),
+        "chats": all_chats_data
+    }, 200
+
+
+
+
 ##### get user contact list #####
 
 @app.route("/user_contacts/<user_id>")
