@@ -235,7 +235,7 @@ def user_contacts(user_id):
     url = (
         f"{MESSAGES_REST_URL}"
         f"?or=(sender_id.eq.{user_id},receiver_id.eq.{user_id})"
-        f"&select=sender_id,receiver_id,msg,timestamp"
+        f"&select=sender_id,receiver_id,msg,msg_seen,timestamp"
         f"&order=timestamp.desc"
     )
     rows = requests.get(url, headers=HEADERS).json()
@@ -252,7 +252,7 @@ def user_contacts(user_id):
                 "last_message": msg["msg"],
                 "last_message_time": msg["timestamp"],
                 "last_message_sender_id": sender,
-                
+                "last_message_seen": msg["msg_seen"],
             }
     contact_ids = list(contact_map.keys())
     if not contact_ids:
@@ -267,19 +267,59 @@ def user_contacts(user_id):
     final_contacts = []
     for u in user_rows:
         uid = u["user_id"]
+        last = contact_map[uid]
+        if last["last_message_sender_id"] == user_id:
+            seen_status = "seen"
+        else:
+            seen_status = last["last_message_seen"]
         final_contacts.append({
             "id": uid,
             "name": u.get("name", ""),
             "profile_pic": u.get("profile_pic", ""),
-            "last_message": contact_map[uid]["last_message"],
-            "last_message_time": contact_map[uid]["last_message_time"],
-            "last_message_sender_id": contact_map[uid]["last_message_sender_id"],
-            "msg_seen": "seen" if user_id != sender else "not_seen"
+            "last_message": last["last_message"],
+            "last_message_time": last["last_message_time"],
+            "last_message_sender_id": last["last_message_sender_id"],
+            "msg_seen": seen_status
         })
     return jsonify({
         "contact_count": len(final_contacts),
         "contacts": final_contacts
     }), 200
+
+
+
+#####  msg_seen_update ######
+
+@app.route("/mark_msg_seen/<user_id>/<other_user>", methods=["PATCH"])
+def mark_last_msg_seen(user_id, other_user):
+    fetch_url = (
+        f"{MESSAGES_REST_URL}"
+        f"?or=(and(sender_id.eq.{other_user},receiver_id.eq.{user_id}),"
+        f"and(sender_id.eq.{user_id},receiver_id.eq.{other_user}))"
+        f"&order=timestamp.desc"
+        f"&limit=1"
+    )
+    last_msg_res = requests.get(fetch_url, headers=HEADERS)
+    if last_msg_res.status_code != 200:
+        return {"error": "failed to fetch last message"}, 400
+    last_rows = last_msg_res.json()
+    if not last_rows:
+        return {"status": "no_messages"}, 200
+    last_msg = last_rows[0]
+    msg_id = last_msg["id"]
+    sender = last_msg["sender_id"]
+    receiver = last_msg["receiver_id"]
+    if user_id != receiver:
+        return {"status": "no_update_user_is_sender"}, 200
+    update_url = f"{MESSAGES_REST_URL}?id=eq.{msg_id}"
+    update_res = requests.patch(
+        update_url,
+        json={"msg_seen": "seen"},
+        headers=HEADERS
+    )
+    if update_res.status_code in (200, 204):
+        return {"status": "last_message_marked_seen"}, 200
+    return {"error": "update_failed", "details": update_res.text}, 400
 
 
 
