@@ -118,15 +118,21 @@ def add_message():
     sender = body.get("sender_id")
     receiver = body.get("receiver_id")
     text = body.get("msg")
+    
     if not sender or not receiver or not text:
         return {"error": "sender_id, receiver_id, msg required"}, 400
+    ensure_contact(sender, receiver)
+    ensure_contact(receiver, sender)
     existing_shared_id = find_existing_chat(sender, receiver)
     if existing_shared_id:
         shared_id = existing_shared_id
     else:
         now = datetime.now(ist)
         shared_id = now.strftime("%Y%m%d%H%M%S")
-    count_url = f"{MESSAGES_REST_URL}?id=eq.{shared_id}&select=conversation_id"
+    count_url = (
+    f"{MESSAGES_REST_URL}"
+    f"?id=eq.{shared_id}&conversation_id=gt.0&select=conversation_id"
+)
     previous_msgs = requests.get(count_url, headers=HEADERS).json()
     next_convo_id = len(previous_msgs) + 1
     timestamp = datetime.now(ist).strftime("%Y-%m-%d \n %H:%M:%S")
@@ -138,14 +144,27 @@ def add_message():
         "msg": text,
         "timestamp": timestamp
     }
+    existing_chat = find_existing_chat(sender, receiver)
+    if not existing_chat:
+        base_row = {
+            "id": shared_id,
+            "conversation_id": 0,
+            "sender_id": sender,
+            "receiver_id": receiver,
+            "msg": "",
+            "timestamp": ""
+        }
+        requests.post(MESSAGES_REST_URL, json=base_row, headers=HEADERS)
     res = requests.post(MESSAGES_REST_URL, json=payload, headers=HEADERS)
     receiver_token = fetch_user_token(receiver)
     if receiver_token:
+        sender_name = fetch_user_name(sender) or sender
         send_notification_to_server(
-            receiver_token,
-            title=f"New message from {sender}",
-            body=text
+        receiver_token,
+        title=sender_name,
+        body=text
         )
+
     else:
         print("⚠️ No FCM token stored for this user:", receiver)
     return jsonify({
@@ -155,50 +174,108 @@ def add_message():
     }), res.status_code
 
 
-
-
+def fetch_user_name(user_id):
+    url = f"{SUPABASE_URL}/rest/v1/users?user_id=eq.{user_id}&select=name"
+    res = requests.get(url, headers=HEADERS).json()
+    if len(res) > 0:
+        return res[0]["name"]
+    return None
 def fetch_user_token(user_id):
     url = f"{SUPABASE_URL}/rest/v1/users?user_id=eq.{user_id}&select=fcm_token"
     res = requests.get(url, headers=HEADERS).json()
     if len(res) > 0:
         return res[0]["fcm_token"]
     return None
+def ensure_contact(user_id, contact_id):
+    check_url = (
+        f"{SUPABASE_URL}/rest/v1/user_contacts"
+        f"?and=(user_id.eq.{user_id},contact_id.eq.{contact_id})"
+    )
+    exists = requests.get(check_url, headers=HEADERS).json()
+    if exists:
+        return  
+    payload = {"user_id": user_id, "contact_id": contact_id}
+    requests.post(
+        f"{SUPABASE_URL}/rest/v1/user_contacts",
+        json=payload,
+        headers=HEADERS
+    )
 
 
 
 ######  delete single message ######
 
-@app.route("/delete_message/<sender>/<receiver>/<convo_id>", methods=["DELETE"])
-def delete_one(sender, receiver, convo_id):
-    url = (
+@app.route("/delete_message/<user1>/<user2>/<convo_id>", methods=["DELETE"])
+def delete_msg(user1, user2, convo_id):
+    get_url = (
         f"{MESSAGES_REST_URL}"
-        f"?and(sender_id.eq.{sender},receiver_id.eq.{receiver},conversation_id.eq.{convo_id})"
+        f"?or=("
+        f"and(sender_id.eq.{user1},receiver_id.eq.{user2},conversation_id.eq.{convo_id}),"
+        f"and(sender_id.eq.{user2},receiver_id.eq.{user1},conversation_id.eq.{convo_id})"
+        f")"
+        f"&select=pk,id"
+        f"&limit=1"
     )
-    res = requests.delete(url, headers=HEADERS)
-    if res.status_code == 204:
-        return {"status": "Message deleted"}, 200
-    else:
-        return {"error": "Failed", "details": res.text}, 400
+    msg = requests.get(get_url, headers=HEADERS).json()
+    print("GET MESSAGE RESULT =", msg)
+    if not msg:
+        print("NO MESSAGE FOUND")
+        return {"error": "message_not_found"}, 404
+    shared_id = msg[0]["id"]
+    print("STEP 1: shared_id =", shared_id)
+    delete_url = f"{MESSAGES_REST_URL}?pk=eq.{msg[0]['pk']}"
+    del_res = requests.delete(delete_url, headers=HEADERS)
+    print("STEP 2: delete status =", del_res.status_code)
+    fetch_url = (
+        f"{MESSAGES_REST_URL}"
+        f"?id=eq.{shared_id}&conversation_id=gt.0"
+        f"&select=pk,conversation_id"
+        f"&order=conversation_id.asc"
+    )
+    print("STEP 3: fetch_url =", fetch_url)
+    msgs = requests.get(fetch_url, headers=HEADERS).json()
+    print("STEP 4: msgs =", msgs)
+    new_id = 1
+    for m in msgs:
+        print("PATCHING:", m)
+        pk = m["pk"]
+        patch_url = f"{MESSAGES_REST_URL}?pk=eq.{pk}"
+        requests.patch(
+            patch_url,
+            json={"conversation_id": new_id},
+            headers={
+                "apikey": SUPABASE_KEY,
+                "Authorization": f"Bearer {SUPABASE_KEY}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal"
+            }
+        )
+        new_id += 1
+    print("DONE RENUMBERING")
+    return {"status": "done"}, 200
+
 
 
 ######  delete whole chat ######
-
-@app.route("/delete_chat/<sender>/<receiver>", methods=["DELETE"])
-def delete_by_users(sender, receiver):
+@app.route("/clear_chat/<sender>/<receiver>", methods=["DELETE"])
+def clear_chat(sender, receiver):
     url = (
         f"{MESSAGES_REST_URL}"
-        f"?or=(and(sender_id.eq.{sender},receiver_id.eq.{receiver}),"
-        f"and(sender_id.eq.{receiver},receiver_id.eq.{sender}))"
+        f"?or=("
+        f"and(sender_id.eq.{sender},receiver_id.eq.{receiver}),"
+        f"and(sender_id.eq.{receiver},receiver_id.eq.{sender})"
+        f")"
+        f"&conversation_id=gt.0"
     )
     res = requests.delete(url, headers=HEADERS)
     if res.status_code == 204:
-        return {"status": "All messages deleted between users"}, 200
+        return {"status": "chat cleared, contact retained"}, 200
     else:
-        return {"error": "Failed", "details": res.text}, 400
+        return {"error": "failed", "details": res.text}, 400
+
 
 
 ##### get chat #####
-
 @app.route("/chat/<sender>/<receiver>")
 def chat_between_two(sender, receiver):
     url = (
@@ -219,6 +296,7 @@ def chat_between_two(sender, receiver):
             "msg": msg["msg"],
             "timestamp": msg["timestamp"],
             "sender_id":msg["sender_id"],
+            "conversation_id":msg["conversation_id"],
             "user_sent": "yes" if msg["sender_id"] == sender else "no"
         })
     return jsonify({
@@ -231,7 +309,6 @@ def chat_between_two(sender, receiver):
 
 
 ###### get user all chats #######
-
 @app.route("/all_chats/<user_id>")
 def all_chats(user_id):
     contacts_url = (
@@ -276,38 +353,63 @@ def all_chats(user_id):
     }, 200
 
 
+##### search users ######
+@app.route("/search_users/<query>", methods=["GET"])
+def search_users(query):
+    url = (
+        f"{SUPABASE_URL}/rest/v1/users"
+        f"?or=(user_id.ilike.%{query}%,name.ilike.%{query}%)"
+        f"&select=user_id,name,profile_pic"
+    )
+    res = requests.get(url, headers=HEADERS)
+    if res.status_code != 200:
+        return {"error": "failed", "details": res.text}, 400
+    return {"count": len(res.json()), "users": res.json()}
+
 
 
 ##### get user contact list #####
-
 @app.route("/user_contacts/<user_id>")
 def user_contacts(user_id):
-    url = (
+
+    manual_url = (
+        f"{SUPABASE_URL}/rest/v1/user_contacts"
+        f"?user_id=eq.{user_id}&select=contact_id"
+    )
+    manual_rows = requests.get(manual_url, headers=HEADERS).json()
+    manual_set = {row["contact_id"] for row in manual_rows}
+    chat_url = (
         f"{MESSAGES_REST_URL}"
         f"?or=(sender_id.eq.{user_id},receiver_id.eq.{user_id})"
         f"&select=sender_id,receiver_id,msg,msg_seen,timestamp"
         f"&order=timestamp.desc"
     )
-    rows = requests.get(url, headers=HEADERS).json()
-    if not rows:
-        return {"contact_count": 0, "contacts": []}, 200
+    rows = requests.get(chat_url, headers=HEADERS).json()
     contact_map = {}
     for msg in rows:
         sender = msg["sender_id"]
         receiver = msg["receiver_id"]
-        other_user = receiver if sender == user_id else sender
-        if other_user not in contact_map:
-            contact_map[other_user] = {
-                "id": other_user,
+        other = receiver if sender == user_id else sender
+        if other not in contact_map:
+            contact_map[other] = {
+                "id": other,
                 "last_message": msg["msg"],
                 "last_message_time": msg["timestamp"],
                 "last_message_sender_id": sender,
-                "last_message_seen": msg["msg_seen"],
+                "msg_seen": msg["msg_seen"] if user_id==receiver else "seen"
             }
-    contact_ids = list(contact_map.keys())
-    if not contact_ids:
+    for contact_id in manual_set:
+        if contact_id not in contact_map:
+            contact_map[contact_id] = {
+                "id": contact_id,
+                "last_message": "",
+                "last_message_time": "",
+                "last_message_sender_id": "",
+                "msg_seen": ""
+            }
+    if not contact_map:
         return {"contact_count": 0, "contacts": []}, 200
-    ids_str = ",".join(contact_ids)
+    ids_str = ",".join(contact_map.keys())
     users_url = (
         f"{SUPABASE_URL}/rest/v1/users"
         f"?user_id=in.({ids_str})"
@@ -317,25 +419,49 @@ def user_contacts(user_id):
     final_contacts = []
     for u in user_rows:
         uid = u["user_id"]
-        last = contact_map[uid]
-        if last["last_message_sender_id"] == user_id:
-            seen_status = "seen"
-        else:
-            seen_status = last["last_message_seen"]
+        info = contact_map[uid]
         final_contacts.append({
             "id": uid,
             "name": u.get("name", ""),
             "profile_pic": u.get("profile_pic", ""),
-            "last_message": last["last_message"],
-            "last_message_time": last["last_message_time"],
-            "last_message_sender_id": last["last_message_sender_id"],
-            "msg_seen": seen_status
+            "last_message": info["last_message"],
+            "last_message_time": info["last_message_time"],
+            "last_message_sender_id": info["last_message_sender_id"],
+            "msg_seen": info["msg_seen"]
         })
     return jsonify({
         "contact_count": len(final_contacts),
         "contacts": final_contacts
     }), 200
 
+
+
+
+
+##### add contact to user contact list ######
+@app.route("/add_contact", methods=["POST"])
+def add_contact():
+    body = request.json or {}
+    user_id = body.get("user_id")
+    contact_id = body.get("contact_id")
+    if not user_id or not contact_id:
+        return {"error": "user_id and contact_id required"}, 400
+    check_url = (
+        f"{SUPABASE_URL}/rest/v1/user_contacts"
+        f"?and=(user_id.eq.{user_id},contact_id.eq.{contact_id})"
+    )
+    exists = requests.get(check_url, headers=HEADERS).json()
+    if exists:
+        return {"status": "already_exists"}, 200
+    payload = {"user_id": user_id, "contact_id": contact_id}
+    res = requests.post(
+        f"{SUPABASE_URL}/rest/v1/user_contacts",
+        json=payload,
+        headers=HEADERS
+    )
+    if res.status_code in (200, 201):
+        return {"status": "contact_added"}, 200
+    return {"error": "insert_failed", "details": res.text}, 400
 
 
 #####  msg_seen_update ######
@@ -466,7 +592,7 @@ def update_last_seen(user_id):
     url = f"{SUPABASE_URL}/rest/v1/users?user_id=eq.{user_id}"
     res = requests.patch(
         url,
-        json={"last_seen": datetime.now(ist).isoformat()},
+        json={"last_seen": datetime.now(ist).strftime("%Y-%m-%d \n %H:%M:%S")},
         headers=HEADERS
     )
     if res.status_code == 204:
