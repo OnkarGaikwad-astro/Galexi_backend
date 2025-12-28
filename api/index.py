@@ -1,10 +1,12 @@
 import json
 import os
 import requests
+import base64   
 from flask import Flask, request, jsonify
 import pytz
 from datetime import datetime
 import firebase_admin
+from uuid import uuid4
 from firebase_admin import credentials, messaging
 
 app = Flask(__name__)
@@ -638,7 +640,41 @@ def delete_user_full(user_id):
             "details": user_res.text
         }, 400
     
+######  upload iamge ######
+import base64
+import requests
+from flask import request, jsonify
+from uuid import uuid4
 
+@app.route("/upload_image", methods=["POST"])
+def upload_image():
+    data = request.json
+    if not data or "file" not in data:
+        return jsonify({"error": "file missing"}), 400
+    base64_file = data["file"].split(",")[-1]
+    try:
+        file_bytes = base64.b64decode(base64_file)
+    except Exception:
+        return jsonify({"error": "invalid base64"}), 400
+    filename = f"{uuid4()}.jpg"
+    upload_path = f"uploads/{filename}"
+    upload_url = f"{SUPABASE_URL}/storage/v1/object/images/{upload_path}"
+    res = requests.post(
+        upload_url,
+        headers={
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "apikey": SUPABASE_KEY,
+            "Content-Type": "image/jpeg"
+        },
+        data=file_bytes
+    )
+    if res.status_code not in (200, 201):
+        return jsonify({"error": res.text}), 500
+    return jsonify({
+        "status": "uploaded",
+        "url": f"{SUPABASE_URL}/storage/v1/object/public/images/{upload_path}"
+    }), 200
 
+    
 if __name__ == "__main__":
     app.run(debug=True)
