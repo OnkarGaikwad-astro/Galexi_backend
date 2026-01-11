@@ -8,6 +8,10 @@ from datetime import datetime
 import firebase_admin
 from uuid import uuid4
 from firebase_admin import credentials, messaging
+import base64
+import requests
+from flask import request, jsonify
+from uuid import uuid4
 
 app = Flask(__name__)
 
@@ -164,7 +168,7 @@ def add_message():
         send_notification_to_server(
         receiver_token,
         title=sender_name,
-        body=text
+        body= "⚀ Image" if '\uE000' in text else text
         )
 
     else:
@@ -415,7 +419,7 @@ def user_contacts(user_id):
     users_url = (
         f"{SUPABASE_URL}/rest/v1/users"
         f"?user_id=in.({ids_str})"
-        f"&select=user_id,name,profile_pic"
+        f"&select=user_id,name,profile_pic,bio"
     )
     user_rows = requests.get(users_url, headers=HEADERS).json()
     final_contacts = []
@@ -429,7 +433,8 @@ def user_contacts(user_id):
             "last_message": info["last_message"],
             "last_message_time": info["last_message_time"],
             "last_message_sender_id": info["last_message_sender_id"],
-            "msg_seen": info["msg_seen"]
+            "msg_seen": info["msg_seen"],
+            "bio" : u.get("bio","")
         })
     return jsonify({
         "contact_count": len(final_contacts),
@@ -498,20 +503,6 @@ def mark_last_msg_seen(user_id, other_user):
     if update_res.status_code in (200, 204):
         return {"status": "last_message_marked_seen"}, 200
     return {"error": "update_failed", "details": update_res.text}, 400
-
-
-
-
-
-###### get user name ######
-
-@app.route("/user_name/<user_id>")
-def get_user_name(user_id):
-    url = f"{SUPABASE_URL}/rest/v1/users?user_id=eq.{user_id}&select=name"
-    res = requests.get(url, headers=HEADERS).json()
-    if not res:
-        return {"error": "user not found"}, 404
-    return {"user_id": user_id, "name": res[0]["name"]}
 
 
 
@@ -641,10 +632,6 @@ def delete_user_full(user_id):
         }, 400
     
 ######  upload iamge ######
-import base64
-import requests
-from flask import request, jsonify
-from uuid import uuid4
 
 @app.route("/upload_image", methods=["POST"])
 def upload_image():
@@ -677,4 +664,4 @@ def upload_image():
 
     
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=False)
